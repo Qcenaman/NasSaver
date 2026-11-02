@@ -3,6 +3,8 @@ package com.qcenaman.nassaver.service
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.os.Build
+import android.os.Environment
 import android.os.PowerManager
 import com.qcenaman.nassaver.core.LogStore
 import java.io.File
@@ -16,6 +18,16 @@ class DeviceState(private val ctx: Context) {
     fun screenOn(): Boolean = power.isInteractive
     fun dozing(): Boolean = power.isDeviceIdleMode
     fun batteryExempt(): Boolean = power.isIgnoringBatteryOptimizations(ctx.packageName)
+
+    fun allFilesAccess(): Boolean = Environment.isExternalStorageManager()
+
+    /** True when Android TV's Low Power Standby would cut this app's network while the TV is off. */
+    fun lowPowerStandbyBlocks(): Boolean = when {
+        Build.VERSION.SDK_INT < 33 -> false
+        !power.isLowPowerStandbyEnabled -> false
+        Build.VERSION.SDK_INT >= 34 -> !power.isExemptFromLowPowerStandby
+        else -> true
+    }
 
     fun transport(): String {
         val caps = connectivity.getNetworkCapabilities(connectivity.activeNetwork) ?: return "no network"

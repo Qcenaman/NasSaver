@@ -21,8 +21,13 @@ import com.qcenaman.nassaver.core.Clock
 import com.qcenaman.nassaver.core.Fmt
 import com.qcenaman.nassaver.core.Heartbeat
 import com.qcenaman.nassaver.core.LogStore
+import com.qcenaman.nassaver.core.Router
 import com.qcenaman.nassaver.core.StatusPage
-import com.qcenaman.nassaver.core.StatusServer
+import com.qcenaman.nassaver.core.api.Api
+import com.qcenaman.nassaver.core.auth.Auth
+import com.qcenaman.nassaver.core.dav.WebDav
+import com.qcenaman.nassaver.core.fs.VirtualFs
+import com.qcenaman.nassaver.core.http.HttpServer
 import com.qcenaman.nassaver.ui.MainActivity
 import java.io.File
 import java.util.concurrent.Executors
@@ -30,13 +35,16 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 
 /**
- * Standby test: stays in the foreground with a wake lock and a Wi-Fi lock, logs a tick every minute,
- * and serves the log on port 8080 so a phone can check whether the TV stayed alive and reachable.
+ * The file server: stays in the foreground with a wake lock and a Wi-Fi lock, serves the drives over
+ * WebDAV and a web page on port 8080, and keeps a small log that shows whether it survived standby.
  */
 class KeepAliveService : Service() {
     private lateinit var log: LogStore
     private lateinit var device: DeviceState
-    private lateinit var server: StatusServer
+    private lateinit var auth: Auth
+    private lateinit var fs: VirtualFs
+    private lateinit var server: HttpServer
+    private var nsd: Nsd? = null
     private var executor: ScheduledExecutorService? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -47,6 +55,8 @@ class KeepAliveService : Service() {
     @Volatile private var ticks = 0
     @Volatile private var lateTicks = 0
     @Volatile private var longestGapMs = 0L
+
+    private val webPage: ByteArray by lazy { assets.open("web/index.html").use { it.readBytes() } }
 
     private val events = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context, intent: Intent) {
@@ -63,9 +73,16 @@ class KeepAliveService : Service() {
         }
     }
 
-    private val pages = object : StatusServer.Pages {
-        override fun html() = StatusPage.render("NasSaver standby test", summary(), this@KeepAliveService.log.tail(300).asReversed())
-        override fun log() = this@KeepAliveService.log.text()
+    private val media = object : BroadcastReceiver() {
+        override fun onReceive(ctx: Context, intent: Intent) {
+            fs.invalidate()
+            val what = when (intent.action) {
+                Intent.ACTION_MEDIA_MOUNTED -> "drive connected"
+                Intent.ACTION_MEDIA_BAD_REMOVAL -> "drive pulled out without ejecting"
+                else -> "drive removed"
+            }
+            log.add("$what: ${intent.data?.path ?: "?"}")
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -74,12 +91,23 @@ class KeepAliveService : Service() {
         super.onCreate()
         log = Logs.get(this)
         device = DeviceState(this)
+        auth = Logins.get(this)
+        fs = VirtualFs(AndroidDrives(this))
         startedWall = System.currentTimeMillis()
         goForeground()
         acquireLocks()
-        registerEvents()
-        server = StatusServer(PORT, pages, onError = { log.add(it) })
+        registerReceivers()
+        val router = Router(
+            auth = auth,
+            dav = WebDav(fs, log = { log.add(it) }),
+            api = Api(fs),
+            page = { webPage },
+            status = { StatusPage.render("NasSaver status", summary(), log.tail(300).asReversed()) },
+            log = { log.add(it) },
+        )
+        server = HttpServer(PORT, router::handle, onError = { log.add(it) })
         server.start()
+        nsd = Nsd(this, PORT).also { it.start() }
         current = this
     }
 
@@ -99,8 +127,10 @@ class KeepAliveService : Service() {
         log.add("service stopped")
         current = null
         executor?.shutdownNow()
+        nsd?.stop()
         server.stop()
         runCatching { unregisterReceiver(events) }
+        runCatching { unregisterReceiver(media) }
         runCatching { wakeLock?.release() }
         runCatching { wifiLock?.release() }
         super.onDestroy()
@@ -109,19 +139,29 @@ class KeepAliveService : Service() {
     fun summary(): List<Pair<String, String>> {
         val now = System.currentTimeMillis()
         val ip = device.ipv4().firstOrNull()
+        val drives = runCatching { fs.drives() }.getOrDefault(emptyList())
         return listOf(
-            "App" to "NasSaver ${BuildConfig.VERSION_NAME} (standby test build)",
+            "App" to "NasSaver ${BuildConfig.VERSION_NAME}",
+            "Address" to if (ip != null) "http://$ip:$PORT  (WebDAV: http://$ip:$PORT/dav)" else "no network address",
+            "Login" to (auth.user?.let { "set (user \"$it\")" } ?: "not set yet: open the address in a browser"),
+            "Drives" to if (drives.isEmpty()) "none" else drives.joinToString(", ") { it.name },
+            "All files access" to if (device.allFilesAccess()) "granted" else "MISSING: drives can't be read",
+            "Low Power Standby" to if (device.lowPowerStandbyBlocks()) "is ON: network stops in standby" else "off",
             "TV" to "${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
             "Running since" to "${Fmt.timestamp(startedWall)} (${Fmt.duration(now - startedWall)})",
             "Started because" to reason,
-            "Ticks" to "$ticks total, $lateTicks late, longest gap ${Fmt.duration(longestGapMs)}",
+            "Heartbeat" to "$ticks ticks, $lateTicks late, longest gap ${Fmt.duration(longestGapMs)}",
             "Screen" to if (device.screenOn()) "on" else "off",
-            "Doze" to if (device.dozing()) "yes" else "no",
             "Network" to device.describeNetwork(),
             "Battery optimisation" to if (device.batteryExempt()) "exempt" else "not exempt",
             "Locks" to "wake ${held(wakeLock?.isHeld)}, Wi-Fi ${held(wifiLock?.isHeld)}",
-            "Status page" to if (ip != null) "http://$ip:$PORT" else "no network address",
+            "Server" to if (server.isRunning) "listening on port $PORT" else "NOT running",
         )
+    }
+
+    fun resetLogin() {
+        auth.reset()
+        log.add("login reset on the TV")
     }
 
     private fun held(b: Boolean?) = if (b == true) "held" else "NOT held"
@@ -137,8 +177,14 @@ class KeepAliveService : Service() {
             }
         }
         log.add("service started ($reason) | v${BuildConfig.VERSION_NAME} | $history | ${device.describeNetwork()}")
+        warnings().forEach { log.add(it) }
         last = now
         saveLast(now)
+    }
+
+    private fun warnings() = buildList {
+        if (!device.allFilesAccess()) add("All files access is MISSING: the drives can't be read until it is granted")
+        if (device.lowPowerStandbyBlocks()) add("Low Power Standby is ON: the network stops while the TV is in standby")
     }
 
     private fun safeTick() {
@@ -159,11 +205,15 @@ class KeepAliveService : Service() {
         saveLast(now)
         if (wakeLock?.isHeld == false) wakeLock?.acquire()
         if (wifiLock?.isHeld == false) wifiLock?.acquire()
-        if (!server.isRunning && server.start()) log.add("status page restarted")
-        log.add(
-            "tick #$ticks | ${Heartbeat.describe(gap)} | screen ${if (device.screenOn()) "on" else "off"}" +
-                " | doze ${if (device.dozing()) "yes" else "no"} | ${device.describeNetwork()}"
-        )
+        if (!server.isRunning && server.start()) log.add("server restarted")
+        // Only what matters goes in the log: late ticks, plus one "alive" line an hour.
+        if (gap.late || ticks % 60 == 0) {
+            log.add(
+                "${if (gap.late) "tick" else "alive"} #$ticks | ${Heartbeat.describe(gap)} | screen ${if (device.screenOn()) "on" else "off"}" +
+                    " | ${device.describeNetwork()}"
+            )
+        }
+        if (ticks % 60 == 0) warnings().forEach { log.add(it) }
     }
 
     private fun readClock() = Clock(System.currentTimeMillis(), SystemClock.elapsedRealtime(), SystemClock.uptimeMillis())
@@ -176,8 +226,8 @@ class KeepAliveService : Service() {
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         val n = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat)
-            .setContentTitle("NasSaver is running")
-            .setContentText("Status page on port $PORT")
+            .setContentTitle("NasSaver is sharing your drives")
+            .setContentText("Server on port $PORT")
             .setOngoing(true)
             .setContentIntent(open)
             .build()
@@ -199,16 +249,29 @@ class KeepAliveService : Service() {
         }
     }
 
-    private fun registerEvents() {
-        val filter = IntentFilter().apply {
+    private fun registerReceivers() {
+        val screen = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_DREAMING_STARTED)
             addAction(Intent.ACTION_DREAMING_STOPPED)
             addAction(Intent.ACTION_SHUTDOWN)
         }
-        if (Build.VERSION.SDK_INT >= 33) registerReceiver(events, filter, Context.RECEIVER_NOT_EXPORTED)
-        else registerReceiver(events, filter)
+        val drives = IntentFilter().apply {
+            addAction(Intent.ACTION_MEDIA_MOUNTED)
+            addAction(Intent.ACTION_MEDIA_UNMOUNTED)
+            addAction(Intent.ACTION_MEDIA_EJECT)
+            addAction(Intent.ACTION_MEDIA_REMOVED)
+            addAction(Intent.ACTION_MEDIA_BAD_REMOVAL)
+            addDataScheme("file")
+        }
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(events, screen, Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(media, drives, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(events, screen)
+            registerReceiver(media, drives)
+        }
     }
 
     companion object {

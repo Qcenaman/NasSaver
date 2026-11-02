@@ -13,8 +13,8 @@ object StatusPage {
     }
 
     fun lineClass(line: String): String = when {
-        listOf("LATE", "REBOOTED", "stopped", "failed", "could not").any { line.contains(it) } -> "bad"
-        listOf("screen", "screensaver", "started", "shutting").any { line.contains(it) } -> "info"
+        listOf("LATE", "REBOOTED", "stopped", "failed", "could not", "MISSING", "is ON").any { line.contains(it) } -> "bad"
+        listOf("screen", "screensaver", "started", "shutting", "drive", "login").any { line.contains(it) } -> "info"
         else -> ""
     }
 
