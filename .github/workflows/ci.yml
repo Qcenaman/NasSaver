@@ -24,15 +24,26 @@ jobs:
       - name: Name the APK
         run: cp app/build/outputs/apk/release/app-release.apk NasSaver.apk
       - uses: actions/upload-artifact@v4
-        with: { name: NasSaver-${{ github.sha }}, path: NasSaver.apk, retention-days: 30 }
-      - name: Release the APK (keeps the notes of an existing release, else uses the tag message)
-        if: startsWith(github.ref, 'refs/tags/v')
-        env: { GH_TOKEN: "${{ github.token }}", TAG: "${{ github.ref_name }}" }
+        with: { name: "NasSaver-${{ github.sha }}", path: NasSaver.apk, retention-days: 30 }
+      # A new versionName pushed to main is tagged v<versionName> and released with the commit message as notes.
+      # A pushed v* tag (or a release made on GitHub) gets the APK too, with the tag message or existing notes.
+      - name: Release the APK
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        env: { GH_TOKEN: "${{ github.token }}" }
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" NasSaver.apk --clobber
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="$GITHUB_REF_NAME"
           else
+            TAG="v$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' app/build.gradle.kts)"
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            if [[ "$GITHUB_REF" == refs/tags/* ]]; then gh release upload "$TAG" NasSaver.apk --clobber; fi
+            exit 0
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
             git for-each-ref "refs/tags/$TAG" --format='%(contents)' > notes.md
-            gh release create "$TAG" NasSaver.apk --title "NasSaver $TAG" --notes-file notes.md
+          else
+            git log -1 --format=%B | sed '/^Co-Authored-By:/d;/^Claude-Session:/d' > notes.md
           fi
+          gh release create "$TAG" NasSaver.apk --target "$GITHUB_SHA" --title "NasSaver $TAG" --notes-file notes.md
