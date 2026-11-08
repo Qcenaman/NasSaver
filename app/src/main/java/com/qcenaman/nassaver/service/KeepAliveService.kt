@@ -43,6 +43,7 @@ import java.util.concurrent.TimeUnit
 class KeepAliveService : Service() {
     private lateinit var log: LogStore
     private lateinit var device: DeviceState
+    private lateinit var standby: StandbyFixer
     private lateinit var auth: Auth
     private lateinit var fs: VirtualFs
     private lateinit var server: HttpServer
@@ -94,6 +95,7 @@ class KeepAliveService : Service() {
         super.onCreate()
         log = Logs.get(this)
         device = DeviceState(this)
+        standby = StandbyFixer(this)
         auth = Logins.get(this)
         val driveNames = DriveNames(AndroidDrives(this), PrefsDriveNames(this))
         fs = VirtualFs(driveNames)
@@ -114,6 +116,7 @@ class KeepAliveService : Service() {
         server.start()
         nsd = Nsd(this, PORT).also { it.start() }
         current = this
+        Watchdog.schedule(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -152,7 +155,7 @@ class KeepAliveService : Service() {
             "Login" to (auth.user?.let { "set (user \"$it\")" } ?: "not set yet: open the address in a browser"),
             "Drives" to if (drives.isEmpty()) "none" else drives.joinToString(", ") { it.name },
             "All files access" to if (device.allFilesAccess()) "granted" else "MISSING: drives can't be read",
-            "Low Power Standby" to if (device.lowPowerStandbyBlocks()) "is ON: network stops in standby" else "off",
+            "Low Power Standby" to standby.status(),
             "TV" to "${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
             "Running since" to "${Fmt.timestamp(startedWall)} (${Fmt.duration(now - startedWall)})",
             "Started because" to reason,
@@ -185,6 +188,7 @@ class KeepAliveService : Service() {
             }
         }
         log.add("service started ($reason) | v${BuildConfig.VERSION_NAME} | $history | ${device.describeNetwork()}")
+        standby.fix()?.let { log.add(it) }
         warnings().forEach { log.add(it) }
         last = now
         saveLast(now)
@@ -192,7 +196,6 @@ class KeepAliveService : Service() {
 
     private fun warnings() = buildList {
         if (!device.allFilesAccess()) add("All files access is MISSING: the drives can't be read until it is granted")
-        if (device.lowPowerStandbyBlocks()) add("Low Power Standby is ON: the network stops while the TV is in standby")
     }
 
     private fun safeTick() {
@@ -215,6 +218,7 @@ class KeepAliveService : Service() {
         if (wifiLock?.isHeld == false) wifiLock?.acquire()
         if (!server.isRunning && server.start()) log.add("server restarted")
         vpnWatch.tick()
+        standby.fix()?.let { if (standby.canWrite() || ticks % 60 == 0) log.add(it) }
         // Only what matters goes in the log: late ticks, plus one "alive" line an hour.
         if (gap.late || ticks % 60 == 0) {
             log.add(
