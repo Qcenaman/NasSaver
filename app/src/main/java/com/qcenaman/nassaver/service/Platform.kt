@@ -5,9 +5,18 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Environment
 import android.os.storage.StorageManager
+import com.qcenaman.nassaver.core.PcWaker
 import com.qcenaman.nassaver.core.auth.Auth
 import com.qcenaman.nassaver.core.fs.Drive
 import com.qcenaman.nassaver.core.fs.DriveProvider
+import android.content.ComponentName
+import android.content.Intent
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.Inet4Address
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.util.Base64
 
 /** Mounted volumes: the TV's own storage plus every USB drive and SD card, named by their label. */
@@ -27,6 +36,58 @@ class AndroidDrives(private val ctx: Context) : DriveProvider {
     }
 
     private fun clean(s: String?) = s.orEmpty().replace('/', '-').replace('\\', '-').trim().ifEmpty { "Drive" }
+}
+
+/** The computer to wake, kept in private app preferences; packets go out on every LAN the TV is on. */
+object Wakers {
+    @Volatile private var waker: PcWaker? = null
+
+    fun get(ctx: Context): PcWaker = waker ?: synchronized(this) {
+        waker ?: PcWaker(PrefsStore(ctx.applicationContext), ::broadcast).also { waker = it }
+    }
+
+    private class PrefsStore(ctx: Context) : PcWaker.Store {
+        private val prefs = ctx.getSharedPreferences("wol", Context.MODE_PRIVATE)
+        override fun load() = prefs.getString("mac", null)
+        override fun save(mac: String) { prefs.edit().putString("mac", mac).commit() }
+    }
+
+    private fun broadcast(packet: ByteArray): Int {
+        var networks = 0
+        lanInterfaces().forEach { nic ->
+            nic.interfaceAddresses.filter { it.address is Inet4Address && it.broadcast != null }.forEach { a ->
+                val sent = runCatching {
+                    DatagramSocket(InetSocketAddress(a.address, 0)).use { s ->
+                        s.broadcast = true
+                        val targets = listOf(a.broadcast, InetAddress.getByName("255.255.255.255"))
+                        repeat(3) { targets.forEach { t -> PORTS.forEach { p -> s.send(DatagramPacket(packet, packet.size, t, p)) } } }
+                    }
+                }
+                if (sent.isSuccess) networks++
+            }
+        }
+        return networks
+    }
+
+    private fun lanInterfaces() = NetworkInterface.getNetworkInterfaces().toList().filter {
+        it.isUp && !it.isLoopback && !Tailscale.isVpnName(it.name)
+    }
+
+    private val PORTS = listOf(9, 7)
+}
+
+/** Reconnects the Tailscale app; TCL's boot manager stops Android from starting it by itself. */
+object Tailscale {
+    private const val PACKAGE = "com.tailscale.ipn"
+
+    fun isVpnName(name: String) = name.startsWith("tun") || name.startsWith("wg") || name.startsWith("nordlynx")
+
+    /** True for any VPN, so NordVPN isn't fought over while it's in use. */
+    fun vpnUp() = runCatching { NetworkInterface.getNetworkInterfaces().toList().any { it.isUp && isVpnName(it.name) } }.getOrDefault(false)
+
+    fun reconnect(ctx: Context) {
+        ctx.sendBroadcast(Intent("$PACKAGE.CONNECT_VPN").setComponent(ComponentName(PACKAGE, "$PACKAGE.IPNReceiver")))
+    }
 }
 
 /** The login, kept in private app preferences. */

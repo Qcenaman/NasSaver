@@ -140,6 +140,15 @@ function crumbs(){
   if (results) { const sp = document.createElement('span'); sp.className = 'sep'; sp.textContent = '›'; c.append(sp); const b = document.createElement('b'); b.textContent = 'Search: ' + results.q; c.append(b); }
 }
 
+async function wakePc(){
+  try {
+    let {mac} = await api('wol', {}); let q = '';
+    if (!mac) { mac = prompt('MAC address of the computer to wake'); if (!mac) return; q = '?mac=' + encodeURIComponent(mac); }
+    const r = await fetch('/api/wol' + q, {method:'POST', headers:{'X-NasSaver':'1'}}); const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || ('error ' + r.status));
+    toast('Wake signal sent to ' + j.mac);
+  } catch (e) { toast(e.message, true); }
+}
 function toolbar(){
   const t = $('#toolbar'); t.innerHTML = '';
   const btn = (label, fn, cls, dis) => { const b = document.createElement('button'); b.className = 'btn ' + (cls || ''); b.textContent = label; b.onclick = fn; b.disabled = !!dis; t.append(b); return b; };
@@ -154,6 +163,7 @@ function toolbar(){
   btn('⬆ Upload files', () => $('#pickFiles').click(), 'primary', atRoot);
   btn('Upload folder', () => $('#pickFolder').click(), 'hide-sm', atRoot);
   btn('New folder', newFolder, '', atRoot);
+  btn('Wake PC', wakePc);
   const sp = document.createElement('span'); sp.className = 'spacer'; t.append(sp);
   if (!atRoot && info.total) { const f = document.createElement('span'); f.className = 'muted hide-sm'; f.textContent = size(info.free) + ' free of ' + size(info.total); t.append(f); }
 }

@@ -1,5 +1,6 @@
 package com.qcenaman.nassaver
 
+import com.qcenaman.nassaver.core.PcWaker
 import com.qcenaman.nassaver.core.Router
 import com.qcenaman.nassaver.core.api.Api
 import com.qcenaman.nassaver.core.auth.Auth
@@ -23,9 +24,15 @@ class TestServer(root: File, withLogin: Boolean = true) : AutoCloseable {
         override fun save(login: Auth.Login?) { saved = login }
     }
     val auth = Auth(store, iterations = 1000).also { if (withLogin) it.setLogin(USER, PASS) }
+    val packets = mutableListOf<ByteArray>()
+    private val macStore = object : PcWaker.Store {
+        var mac: String? = null
+        override fun load() = mac
+        override fun save(mac: String) { this.mac = mac }
+    }
     private val fs = VirtualFs({ listOf(Drive("Drive A", driveA), Drive("Drive B", driveB)) }, cacheMs = 0)
     private val router = Router(
-        auth, WebDav(fs, log = { synchronized(logLines) { logLines += it } }), Api(fs),
+        auth, WebDav(fs, log = { synchronized(logLines) { logLines += it } }), Api(fs, PcWaker(macStore) { packets += it; 1 }),
         page = { "<html>ui</html>".toByteArray() }, status = { "<html>status</html>" },
     )
     private val server = HttpServer(0, router::handle).also { check(it.start()) }

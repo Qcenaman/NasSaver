@@ -10,8 +10,8 @@ android {
         applicationId = "com.qcenaman.nassaver"
         minSdk = 30
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
     }
     // One keystore for every build (PC and CI) so each new APK installs over the previous one without a reinstall.
     signingConfigs {

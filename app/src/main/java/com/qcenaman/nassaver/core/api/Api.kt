@@ -1,5 +1,6 @@
 package com.qcenaman.nassaver.core.api
 
+import com.qcenaman.nassaver.core.PcWaker
 import com.qcenaman.nassaver.core.fs.FileOps
 import com.qcenaman.nassaver.core.fs.VirtualFs
 import com.qcenaman.nassaver.core.fs.VirtualFs.Node
@@ -11,17 +12,33 @@ import java.util.Locale
 /** JSON endpoints for the web page: folder listings and search. Changes go through WebDAV. */
 class Api(
     private val fs: VirtualFs,
+    private val waker: PcWaker? = null,
     private val searchLimit: Int = 300,
     private val searchBudgetMs: Long = 8000,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
     fun handle(req: Request, sub: String): Response {
+        if (sub == "/wol" && waker != null) return wol(req, waker)
         if (req.method != "GET") return Response.text(405, "method not allowed\n")
         return when (sub) {
             "/list" -> list(req.query["path"] ?: "/")
             "/search" -> search(req.query["path"] ?: "/", req.query["q"].orEmpty())
             else -> Response.text(404, "not found\n")
         }
+    }
+
+    private fun wol(req: Request, waker: PcWaker): Response = when (req.method) {
+        "GET" -> Response.json(200, "{\"mac\":" + (waker.mac?.let(Json::str) ?: "null") + "}")
+        "POST" -> if (req.header("x-nassaver") == null) {
+            // A browser won't add this header on a request sent from another site.
+            Response.json(403, "{\"error\":\"forbidden\"}")
+        } else when (val r = waker.wake(req.query["mac"])) {
+            is PcWaker.Result.Sent -> Response.json(200, "{\"sent\":true,\"mac\":" + Json.str(r.mac) + "}")
+            PcWaker.Result.NoMac -> Response.json(409, "{\"error\":\"no computer saved yet\"}")
+            PcWaker.Result.BadMac -> Response.json(400, "{\"error\":\"that is not a MAC address\"}")
+            PcWaker.Result.NoNetwork -> Response.json(503, "{\"error\":\"the TV has no network\"}")
+        }
+        else -> Response.text(405, "method not allowed\n")
     }
 
     private fun list(path: String): Response {

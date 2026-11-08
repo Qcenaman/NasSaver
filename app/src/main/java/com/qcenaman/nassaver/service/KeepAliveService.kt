@@ -23,6 +23,7 @@ import com.qcenaman.nassaver.core.Heartbeat
 import com.qcenaman.nassaver.core.LogStore
 import com.qcenaman.nassaver.core.Router
 import com.qcenaman.nassaver.core.StatusPage
+import com.qcenaman.nassaver.core.VpnWatch
 import com.qcenaman.nassaver.core.api.Api
 import com.qcenaman.nassaver.core.auth.Auth
 import com.qcenaman.nassaver.core.dav.WebDav
@@ -44,6 +45,7 @@ class KeepAliveService : Service() {
     private lateinit var auth: Auth
     private lateinit var fs: VirtualFs
     private lateinit var server: HttpServer
+    private lateinit var vpnWatch: VpnWatch
     private var nsd: Nsd? = null
     private var executor: ScheduledExecutorService? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -93,6 +95,7 @@ class KeepAliveService : Service() {
         device = DeviceState(this)
         auth = Logins.get(this)
         fs = VirtualFs(AndroidDrives(this))
+        vpnWatch = VpnWatch(Tailscale::vpnUp, { Tailscale.reconnect(this) }, { log.add(it) })
         startedWall = System.currentTimeMillis()
         goForeground()
         acquireLocks()
@@ -100,7 +103,7 @@ class KeepAliveService : Service() {
         val router = Router(
             auth = auth,
             dav = WebDav(fs, log = { log.add(it) }),
-            api = Api(fs),
+            api = Api(fs, Wakers.get(this)),
             page = { webPage },
             status = { StatusPage.render("NasSaver status", summary(), log.tail(300).asReversed()) },
             log = { log.add(it) },
@@ -117,6 +120,7 @@ class KeepAliveService : Service() {
             reason = intent?.getStringExtra(EXTRA_REASON) ?: "restarted by Android"
             announceStart()
             executor = Executors.newSingleThreadScheduledExecutor().also {
+                it.execute { runCatching { vpnWatch.tick() } }
                 it.scheduleWithFixedDelay({ safeTick() }, Heartbeat.INTERVAL_MS, Heartbeat.INTERVAL_MS, TimeUnit.MILLISECONDS)
             }
         }
@@ -155,6 +159,8 @@ class KeepAliveService : Service() {
             "Network" to device.describeNetwork(),
             "Battery optimisation" to if (device.batteryExempt()) "exempt" else "not exempt",
             "Locks" to "wake ${held(wakeLock?.isHeld)}, Wi-Fi ${held(wifiLock?.isHeld)}",
+            "Tailscale" to when (vpnWatch.connected) { true -> "connected"; false -> "reconnecting"; null -> "checking" },
+            "Wake PC" to (Wakers.get(this).mac ?: "no computer saved"),
             "Server" to if (server.isRunning) "listening on port $PORT" else "NOT running",
         )
     }
@@ -206,6 +212,7 @@ class KeepAliveService : Service() {
         if (wakeLock?.isHeld == false) wakeLock?.acquire()
         if (wifiLock?.isHeld == false) wifiLock?.acquire()
         if (!server.isRunning && server.start()) log.add("server restarted")
+        vpnWatch.tick()
         // Only what matters goes in the log: late ticks, plus one "alive" line an hour.
         if (gap.late || ticks % 60 == 0) {
             log.add(

@@ -16,6 +16,8 @@ import com.qcenaman.nassaver.service.DeviceState
 import com.qcenaman.nassaver.service.KeepAliveService
 import com.qcenaman.nassaver.service.Logins
 import com.qcenaman.nassaver.service.Logs
+import com.qcenaman.nassaver.service.Wakers
+import com.qcenaman.nassaver.core.PcWaker
 
 /** TV screen: starts the server and shows its address, login state, warnings and latest log lines. */
 class MainActivity : Activity() {
@@ -25,6 +27,7 @@ class MainActivity : Activity() {
     private lateinit var summary: TextView
     private lateinit var logView: TextView
     private lateinit var reset: Button
+    private lateinit var wake: Button
     private val handler = Handler(Looper.getMainLooper())
     private val refresh = object : Runnable {
         override fun run() {
@@ -36,6 +39,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         KeepAliveService.start(this, "app opened")
+        intent.getStringExtra("wol_mac")?.let { com.qcenaman.nassaver.core.Wol.parseMac(it)?.let { m -> savedMac = com.qcenaman.nassaver.core.Wol.format(m) } }
 
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -52,9 +56,14 @@ class MainActivity : Activity() {
             text = "Reset login"
             setOnClickListener { confirmReset() }
         }
+        wake = Button(this).apply {
+            text = "Wake PC"
+            setOnClickListener { wakePc() }
+        }
         column.addView(LinearLayout(this).apply {
             setPadding(0, dp(12), 0, dp(4))
             addView(reset)
+            addView(wake)
         })
         summary = text(15f, mono = true).apply { setPadding(0, dp(12), 0, dp(12)) }
         column.addView(summary)
@@ -73,6 +82,24 @@ class MainActivity : Activity() {
     override fun onPause() {
         handler.removeCallbacks(refresh)
         super.onPause()
+    }
+
+    private var savedMac: String? = null
+
+    private fun wakePc() {
+        val mac = savedMac
+        savedMac = null
+        Thread {
+            val r = Wakers.get(this).wake(mac)
+            val msg = when (r) {
+                is PcWaker.Result.Sent -> "Wake signal sent to ${r.mac}"
+                PcWaker.Result.NoMac -> "No computer saved yet: use Wake PC on the web page"
+                PcWaker.Result.BadMac -> "That is not a MAC address"
+                PcWaker.Result.NoNetwork -> "The TV has no network"
+            }
+            Logs.get(this).add(msg)
+            runOnUiThread { android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_LONG).show() }
+        }.start()
     }
 
     private fun confirmReset() {
