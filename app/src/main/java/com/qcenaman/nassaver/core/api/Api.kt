@@ -1,6 +1,7 @@
 package com.qcenaman.nassaver.core.api
 
 import com.qcenaman.nassaver.core.PcWaker
+import com.qcenaman.nassaver.core.fs.DriveNames
 import com.qcenaman.nassaver.core.fs.FileOps
 import com.qcenaman.nassaver.core.fs.VirtualFs
 import com.qcenaman.nassaver.core.fs.VirtualFs.Node
@@ -13,12 +14,14 @@ import java.util.Locale
 class Api(
     private val fs: VirtualFs,
     private val waker: PcWaker? = null,
+    private val driveNames: DriveNames? = null,
     private val searchLimit: Int = 300,
     private val searchBudgetMs: Long = 8000,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
     fun handle(req: Request, sub: String): Response {
         if (sub == "/wol" && waker != null) return wol(req, waker)
+        if (sub == "/drive-name" && driveNames != null) return driveName(req, driveNames)
         if (req.method != "GET") return Response.text(405, "method not allowed\n")
         return when (sub) {
             "/list" -> list(req.query["path"] ?: "/")
@@ -39,6 +42,14 @@ class Api(
             PcWaker.Result.NoNetwork -> Response.json(503, "{\"error\":\"the TV has no network\"}")
         }
         else -> Response.text(405, "method not allowed\n")
+    }
+
+    private fun driveName(req: Request, names: DriveNames): Response {
+        if (req.method != "POST") return Response.text(405, "method not allowed\n")
+        if (req.header("x-nassaver") == null) return Response.json(403, "{\"error\":\"forbidden\"}")
+        val error = names.rename(req.query["drive"].orEmpty(), req.query["name"].orEmpty())
+            ?: return run { fs.invalidate(); Response.json(200, "{\"ok\":true}") }
+        return Response.json(400, "{\"error\":" + Json.str(error) + "}")
     }
 
     private fun list(path: String): Response {

@@ -8,6 +8,7 @@ import android.os.storage.StorageManager
 import com.qcenaman.nassaver.core.PcWaker
 import com.qcenaman.nassaver.core.auth.Auth
 import com.qcenaman.nassaver.core.fs.Drive
+import com.qcenaman.nassaver.core.fs.DriveNames
 import com.qcenaman.nassaver.core.fs.DriveProvider
 import android.content.ComponentName
 import android.content.Intent
@@ -36,6 +37,17 @@ class AndroidDrives(private val ctx: Context) : DriveProvider {
     }
 
     private fun clean(s: String?) = s.orEmpty().replace('/', '-').replace('\\', '-').trim().ifEmpty { "Drive" }
+}
+
+/** Drive names you chose, kept in private app preferences. */
+class PrefsDriveNames(ctx: Context) : DriveNames.Store {
+    private val prefs = ctx.getSharedPreferences("drive_names", Context.MODE_PRIVATE)
+    override fun load(): Map<String, String> = prefs.all.mapNotNull { (k, v) -> (v as? String)?.let { k to it } }.toMap()
+    override fun save(names: Map<String, String>) {
+        val e = prefs.edit().clear()
+        names.forEach { (k, v) -> e.putString(k, v) }
+        e.commit()
+    }
 }
 
 /** The computer to wake, kept in private app preferences; packets go out on every LAN the TV is on. */

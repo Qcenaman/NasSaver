@@ -87,6 +87,8 @@ footer a{color:var(--muted)}
 <header><div class="top">
   <div class="logo" onclick="go('/')">💽 NasSaver</div>
   <form class="search" onsubmit="event.preventDefault();doSearch()"><input id="q" type="search" placeholder="Search this folder…" autocomplete="off"></form>
+  <button class="btn primary" onclick="wakePc()">⏻ Wake PC</button>
+  <button class="btn" title="Change which computer to wake" onclick="wakePc(true)">✎</button>
 </div></header>
 <main>
   <nav class="crumbs" id="crumbs"></nav>
@@ -140,10 +142,18 @@ function crumbs(){
   if (results) { const sp = document.createElement('span'); sp.className = 'sep'; sp.textContent = '›'; c.append(sp); const b = document.createElement('b'); b.textContent = 'Search: ' + results.q; c.append(b); }
 }
 
-async function wakePc(){
+async function renameDrive(name){
+  const n = prompt('Name for this drive (leave empty for its original name)', name); if (n === null || n.trim() === name) return;
+  try {
+    const r = await fetch('/api/drive-name?' + new URLSearchParams({drive: name, name: n}), {method:'POST', headers:{'X-NasSaver':'1'}}); const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || ('error ' + r.status));
+    toast('Renamed'); load('/');
+  } catch (e) { toast(e.message, true); }
+}
+async function wakePc(change){
   try {
     let {mac} = await api('wol', {}); let q = '';
-    if (!mac) { mac = prompt('MAC address of the computer to wake'); if (!mac) return; q = '?mac=' + encodeURIComponent(mac); }
+    if (!mac || change) { const m = prompt('MAC address of the computer to wake', mac || ''); if (!m || m === mac) return; q = '?mac=' + encodeURIComponent(m); }
     const r = await fetch('/api/wol' + q, {method:'POST', headers:{'X-NasSaver':'1'}}); const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || ('error ' + r.status));
     toast('Wake signal sent to ' + j.mac);
@@ -163,7 +173,6 @@ function toolbar(){
   btn('⬆ Upload files', () => $('#pickFiles').click(), 'primary', atRoot);
   btn('Upload folder', () => $('#pickFolder').click(), 'hide-sm', atRoot);
   btn('New folder', newFolder, '', atRoot);
-  btn('Wake PC', wakePc);
   const sp = document.createElement('span'); sp.className = 'spacer'; t.append(sp);
   if (!atRoot && info.total) { const f = document.createElement('span'); f.className = 'muted hide-sm'; f.textContent = size(info.free) + ' free of ' + size(info.total); t.append(f); }
 }
@@ -182,8 +191,8 @@ function render(){
     for (const d of entries) {
       const used = d.total - d.free, pct = d.total ? Math.round(used * 100 / d.total) : 0;
       const el = document.createElement('div'); el.className = 'drive';
-      el.innerHTML = `<div class="ic">💽</div><div><div><b>${esc(d.name)}</b></div><div class="muted" style="font-size:13px">${size(used)} used of ${size(d.total)} · ${size(d.free)} free</div><div class="bar"><i style="width:${pct}%"></i></div></div>`;
-      el.onclick = () => go('/' + d.name); l.append(el);
+      el.innerHTML = `<div class="ic">💽</div><div><div><b>${esc(d.name)}</b> <button class="more" title="Rename drive">✎</button></div><div class="muted" style="font-size:13px">${size(used)} used of ${size(d.total)} · ${size(d.free)} free</div><div class="bar"><i style="width:${pct}%"></i></div></div>`;
+      el.onclick = () => go('/' + d.name); el.querySelector('.more').onclick = ev => { ev.stopPropagation(); renameDrive(d.name); }; l.append(el);
     }
     return;
   }

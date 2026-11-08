@@ -6,6 +6,7 @@ import com.qcenaman.nassaver.core.api.Api
 import com.qcenaman.nassaver.core.auth.Auth
 import com.qcenaman.nassaver.core.dav.WebDav
 import com.qcenaman.nassaver.core.fs.Drive
+import com.qcenaman.nassaver.core.fs.DriveNames
 import com.qcenaman.nassaver.core.fs.VirtualFs
 import com.qcenaman.nassaver.core.http.HttpServer
 import java.io.File
@@ -30,9 +31,15 @@ class TestServer(root: File, withLogin: Boolean = true) : AutoCloseable {
         override fun load() = mac
         override fun save(mac: String) { this.mac = mac }
     }
-    private val fs = VirtualFs({ listOf(Drive("Drive A", driveA), Drive("Drive B", driveB)) }, cacheMs = 0)
+    private val nameStore = object : DriveNames.Store {
+        var names: Map<String, String> = emptyMap()
+        override fun load() = names
+        override fun save(names: Map<String, String>) { this.names = names }
+    }
+    private val driveNames = DriveNames({ listOf(Drive("Drive A", driveA), Drive("Drive B", driveB)) }, nameStore)
+    private val fs = VirtualFs(driveNames, cacheMs = 0)
     private val router = Router(
-        auth, WebDav(fs, log = { synchronized(logLines) { logLines += it } }), Api(fs, PcWaker(macStore) { packets += it; 1 }),
+        auth, WebDav(fs, log = { synchronized(logLines) { logLines += it } }), Api(fs, PcWaker(macStore) { packets += it; 1 }, driveNames),
         page = { "<html>ui</html>".toByteArray() }, status = { "<html>status</html>" },
     )
     private val server = HttpServer(0, router::handle).also { check(it.start()) }

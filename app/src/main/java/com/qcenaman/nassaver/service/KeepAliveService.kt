@@ -27,6 +27,7 @@ import com.qcenaman.nassaver.core.VpnWatch
 import com.qcenaman.nassaver.core.api.Api
 import com.qcenaman.nassaver.core.auth.Auth
 import com.qcenaman.nassaver.core.dav.WebDav
+import com.qcenaman.nassaver.core.fs.DriveNames
 import com.qcenaman.nassaver.core.fs.VirtualFs
 import com.qcenaman.nassaver.core.http.HttpServer
 import com.qcenaman.nassaver.ui.MainActivity
@@ -94,7 +95,8 @@ class KeepAliveService : Service() {
         log = Logs.get(this)
         device = DeviceState(this)
         auth = Logins.get(this)
-        fs = VirtualFs(AndroidDrives(this))
+        val driveNames = DriveNames(AndroidDrives(this), PrefsDriveNames(this))
+        fs = VirtualFs(driveNames)
         vpnWatch = VpnWatch(Tailscale::vpnUp, { Tailscale.reconnect(this) }, { log.add(it) })
         startedWall = System.currentTimeMillis()
         goForeground()
@@ -103,7 +105,7 @@ class KeepAliveService : Service() {
         val router = Router(
             auth = auth,
             dav = WebDav(fs, log = { log.add(it) }),
-            api = Api(fs, Wakers.get(this)),
+            api = Api(fs, Wakers.get(this), driveNames),
             page = { webPage },
             status = { StatusPage.render("NasSaver status", summary(), log.tail(300).asReversed()) },
             log = { log.add(it) },
